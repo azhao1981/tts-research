@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS 语音合成压测工具 (Multipart/Form-data)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 20px; background-color: #f7f9fc; }
+        .container { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        
+        /* 顶部输入区布局 */
+        .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .full-width { grid-column: 1 / -1; }
+        
+        .input-group label { display: block; font-weight: 600; margin-bottom: 6px; color: #374151; font-size: 0.9rem; }
+        .input-group input, .input-group textarea { width: 100%; padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-family: inherit; box-sizing: border-box; }
+        .input-group textarea { height: 80px; resize: vertical; }
+        
+        .file-upload-box { border: 2px dashed #3b82f6; background: #eff6ff; padding: 15px; border-radius: 8px; text-align: center; color: #1e40af; cursor: pointer; transition: 0.2s; }
+        .file-upload-box:hover { background: #dbeafe; }
+        
+        button#startBtn { width: 100%; background-color: #2563eb; color: white; border: none; padding: 15px; font-size: 1.1rem; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-top: 10px; }
+        button#startBtn:hover { background-color: #1d4ed8; }
+        button#startBtn:disabled { background-color: #9ca3af; cursor: not-allowed; }
+
+        /* 统计栏 */
+        .stats-bar { display: flex; gap: 15px; margin: 20px 0; padding: 15px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; justify-content: space-around; }
+        .stat-item div:first-child { font-size: 0.85rem; color: #166534; }
+        .stat-item div:last-child { font-size: 1.5rem; font-weight: bold; color: #15803d; }
+
+        /* 表格 */
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 20px; background: white; }
+        th { text-align: left; padding: 12px; background-color: #f3f4f6; color: #4b5563; font-weight: 600; }
+        td { padding: 12px; border-bottom: 1px solid #e5e7eb; vertical-align: middle; }
+        
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+        .b-wait { background: #f3f4f6; color: #6b7280; }
+        .b-stream { background: #fef3c7; color: #d97706; }
+        .b-play { background: #dcfce7; color: #15803d; }
+        .b-done { background: #e5e7eb; color: #374151; }
+        .b-error { background: #fee2e2; color: #b91c1c; }
+        
+        .error-msg { color: #dc2626; font-size: 0.8rem; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 style="margin-top:0; border-bottom:1px solid #eee; padding-bottom:15px;">TTS 语音合成压测 (Multipart/Form-data)</h2>
+
+    <div class="config-grid">
+        <div class="full-width input-group">
+            <label>接口地址 (URL)</label>
+            <input type="text" id="apiUrl" value="http://127.0.0.1:13099/stream">
+        </div>
+
+        <div class="input-group">
+            <label>1. 参考音频 (Prompt Audio) <span style="color:red">*必填</span></label>
+            <input type="file" id="audioFile" accept=".wav,.mp3">
+            <div style="font-size: 0.8rem; color: #666; margin-top: 4px;">由于浏览器安全限制，必须手动选择本地文件 (如 xiangyu.wav)</div>
+        </div>
+        
+        <div class="input-group">
+            <label>并发数 (Concurrency)</label>
+            <input type="number" id="concurrency" value="1" min="1" max="20">
+        </div>
+
+        <div class="full-width input-group">
+            <label>2. 目标文本 (Text)</label>
+            <textarea id="textInput">喂，李先生您好，我这边是先锋教育的王老师。打电话是想跟您同步一个对您家孩子可能有用的信息。</textarea>
+        </div>
+
+        <div class="full-width input-group">
+            <label>3. 提示文本 (Prompt Text)</label>
+            <textarea id="promptTextInput">咱们这个项目呢属于是投入低，回本快，而且现在加盟呢还有一些政策上的这个优惠，呃，您看我后续让招商经理联系您，给您详细介绍一下可以吗？呃，不会占用您太多时间的，也是给您自己一个赚钱的机会嘛。</textarea>
+        </div>
+    </div>
+
+    <button id="startBtn" onclick="startTest()">🚀 开始测试 (Start)</button>
+
+    <div class="stats-bar">
+        <div class="stat-item"><div>平均首响 (TTFB)</div><div id="avgTtfb">-</div></div>
+        <div class="stat-item"><div>平均 RTF</div><div id="avgRtf">-</div></div>
+        <div class="stat-item"><div>成功率</div><div id="successRate">0%</div></div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width:50px">#</th>
+                <th>状态</th>
+                <th>TTFB (ms)</th>
+                <th>接收耗时 (ms)</th>
+                <th>音频时长 (s)</th>
+                <th>RTF</th>
+            </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+    </table>
+</div>
+
+<script>
+    let audioCtx;
+
+    async function startTest() {
+        // 1. 获取输入
+        const url = document.getElementById('apiUrl').value;
+        const text = document.getElementById('textInput').value;
+        const promptText = document.getElementById('promptTextInput').value;
+        const fileInput = document.getElementById('audioFile');
+        const count = parseInt(document.getElementById('concurrency').value);
+
+        // 2. 校验文件
+        if (fileInput.files.length === 0) {
+            alert("❌ 请先选择一个参考音频文件 (.wav)！\n浏览器无法自动读取本地文件。");
+            return;
+        }
+        const promptFile = fileInput.files[0];
+
+        // 3. 界面重置
+        const btn = document.getElementById('startBtn');
+        const tbody = document.getElementById('resultBody');
+        btn.disabled = true;
+        tbody.innerHTML = '';
+        document.getElementById('avgTtfb').innerText = '-';
+        document.getElementById('avgRtf').innerText = '-';
+        document.getElementById('successRate').innerText = '0%';
+
+        // 4. 初始化音频引擎 (解决自动播放策略)
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        // 5. 并发执行
+        const requests = [];
+        for (let i = 0; i < count; i++) {
+            requests.push(runSingleTask(i + 1, url, text, promptText, promptFile));
+        }
+
+        await Promise.all(requests);
+        btn.disabled = false;
+    }
+
+    async function runSingleTask(id, url, text, promptText, file) {
+        // 创建表格行
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${id}</td>
+            <td><span class="badge b-wait">准备中</span></td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+        `;
+        document.getElementById('resultBody').appendChild(tr);
+
+        // 准备 FormData (对应 Python 的 data 和 files)
+        const formData = new FormData();
+        formData.append('text', text);
+        formData.append('prompt_text', promptText);
+        // 注意：这里对应 files={'prompt_audio': ...}
+        formData.append('prompt_audio', file); 
+
+        const startTime = performance.now();
+        let ttfb = 0;
+
+        try {
+            // 发起请求
+            const response = await fetch(url, {
+                method: 'POST',
+                body: formData // Fetch 会自动设置 Content-Type 为 multipart/form-data
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            if (!response.body) throw new Error('ReadableStream 不支持');
+
+            const reader = response.body.getReader();
+            let chunks = [];
+            let receivedLength = 0;
+            
+            updateStatus(tr, 'b-stream', '接收流...');
+
+            // 读取流
+            while (true) {
+                const {done, value} = await reader.read();
+                
+                // 收到第一个包：记录 TTFB
+                if (ttfb === 0) {
+                    ttfb = performance.now() - startTime;
+                    tr.cells[2].innerText = ttfb.toFixed(0);
+                }
+
+                if (done) break;
+                
+                chunks.push(value);
+                receivedLength += value.length;
+            }
+
+            // 接收完成
+            const endTime = performance.now();
+            const totalTime = endTime - startTime; // 网络传输总耗时
+            tr.cells[3].innerText = totalTime.toFixed(0);
+
+            // 合并二进制数据
+            let chunksAll = new Uint8Array(receivedLength);
+            let position = 0;
+            for(let chunk of chunks) {
+                chunksAll.set(chunk, position);
+                position += chunk.length;
+            }
+
+            // 解码音频获取时长 (计算 RTF 必须)
+            // Python代码里是直接写文件，浏览器里我们解码来算时长
+            const audioBuffer = await audioCtx.decodeAudioData(chunksAll.buffer);
+            const duration = audioBuffer.duration;
+
+            // 计算 RTF = 处理耗时 / 音频时长
+            const rtf = (totalTime / 1000) / duration;
+
+            tr.cells[4].innerText = duration.toFixed(2);
+            tr.cells[5].innerText = rtf.toFixed(3);
+            
+            // 标记数据以便统计
+            tr.dataset.ttfb = ttfb;
+            tr.dataset.rtf = rtf;
+            tr.dataset.success = "1";
+            
+            updateStatsSummary();
+            updateStatus(tr, 'b-play', '播放中');
+
+            // 播放
+            playAudio(audioBuffer, tr);
+
+        } catch (e) {
+            console.error(e);
+            updateStatus(tr, 'b-error', '失败');
+            tr.cells[3].innerHTML = `<div class="error-msg">${e.message}</div>`;
+        }
+    }
+
+    function playAudio(buffer, tr) {
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+        source.start(0);
+        source.onended = () => {
+            updateStatus(tr, 'b-done', '完成');
+        };
+    }
+
+    function updateStatus(tr, badgeClass, text) {
+        tr.cells[1].innerHTML = `<span class="badge ${badgeClass}">${text}</span>`;
+    }
+
+    function updateStatsSummary() {
+        const rows = Array.from(document.querySelectorAll('#resultBody tr'));
+        const successRows = rows.filter(r => r.dataset.success === "1");
+        
+        if (successRows.length === 0) return;
+
+        // 计算平均值
+        const avgTtfb = successRows.reduce((a, r) => a + parseFloat(r.dataset.ttfb), 0) / successRows.length;
+        const avgRtf = successRows.reduce((a, r) => a + parseFloat(r.dataset.rtf), 0) / successRows.length;
+        
+        document.getElementById('avgTtfb').innerText = avgTtfb.toFixed(0) + ' ms';
+        document.getElementById('avgRtf').innerText = avgRtf.toFixed(3);
+
+        const total = document.getElementById('concurrency').value;
+        document.getElementById('successRate').innerText = Math.round((successRows.length / total) * 100) + '%';
+    }
+</script>
+
+</body>
+</html>

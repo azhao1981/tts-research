@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS 流式边下边播测试</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 20px; background-color: #f7f9fc; }
+        .container { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 600; margin-bottom: 5px; color: #374151; }
+        input, textarea { width: 100%; padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; box-sizing: border-box; }
+        .btn { width: 100%; background-color: #2563eb; color: white; border: none; padding: 15px; font-weight: bold; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+        .btn:disabled { background-color: #9ca3af; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9rem; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+        .b-stream { background: #dcfce7; color: #15803d; } /* 绿色 */
+        .b-done { background: #e5e7eb; color: #374151; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>TTS 真正的流式播放 (Stream Playback)</h2>
+
+    <div class="input-group">
+        <label>接口地址</label>
+        <input type="text" id="apiUrl" value="http://127.0.0.1:13099/stream">
+    </div>
+    
+    <div class="input-group">
+        <label>1. 参考音频 (Prompt Audio)</label>
+        <input type="file" id="audioFile" accept=".wav">
+    </div>
+
+    <div class="input-group">
+        <label>2. 目标文本</label>
+        <input type="text" id="textInput" value="你好，这是一个真正的流式播放测试。你会发现，我还没接收完，声音就已经出来了。">
+    </div>
+
+    <div class="input-group">
+        <label>3. 提示文本 (Prompt Text) - 务必与音频内容一致！</label>
+        <textarea id="promptTextInput" rows="3">咱们这个项目呢属于是投入低，回本快，而且现在加盟呢还有一些政策上的这个优惠，呃，您看我后续让招商经理联系您，给您详细介绍一下可以吗？呃，不会占用您太多时间的，也是给您自己一个赚钱的机会嘛。</textarea>
+    </div>
+
+    <button id="startBtn" class="btn" onclick="startTest()">🚀 开始流式测试</button>
+
+    <div style="margin-top:20px; display:flex; gap:20px; font-weight:bold; color:#2563eb;">
+        <div>首响 (TTFB): <span id="statTtfb">-</span> ms</div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>状态</th>
+                <th>进度</th>
+                <th>首响 (ms)</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+    </table>
+</div>
+
+<script>
+    // 全局 AudioContext
+    let audioCtx;
+    
+    async function startTest() {
+        const url = document.getElementById('apiUrl').value;
+        const text = document.getElementById('textInput').value;
+        const promptText = document.getElementById('promptTextInput').value;
+        const fileInput = document.getElementById('audioFile');
+        const btn = document.getElementById('startBtn');
+
+        if (fileInput.files.length === 0) { alert("请选择参考音频"); return; }
+        
+        // 1. 初始化 AudioContext
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        // 2. 准备 UI
+        btn.disabled = true;
+        const tbody = document.getElementById('resultBody');
+        tbody.innerHTML = '';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><span class="badge" style="background:#eee">准备中</span></td>
+            <td class="progress">0%</td>
+            <td class="ttfb">-</td>
+            <td class="info">请求已发送...</td>
+        `;
+        tbody.appendChild(tr);
+
+        // 3. 构造请求
+        const formData = new FormData();
+        formData.append('text', text);
+        formData.append('prompt_text', promptText);
+        formData.append('prompt_audio', fileInput.files[0]);
+
+        const startTime = performance.now();
+        let ttfb = 0;
+        let receivedBytes = 0;
+        
+        // ==========================================
+        // 🎵 音频流式播放核心变量
+        // ==========================================
+        let nextStartTime = 0; // 下一段音频的播放起始时间
+        const SAMPLE_RATE = 24000; // 必须与服务器一致 (CosyVoice 默认 24k)
+        let isFirstChunk = true;   // 用于跳过 WAV 头
+
+        try {
+            const response = await fetch(url, { method: 'POST', body: formData });
+            if (!response.body) throw new Error("不支持流式响应");
+            
+            const reader = response.body.getReader();
+            
+            tr.querySelector('.badge').className = 'badge b-stream';
+            tr.querySelector('.badge').innerText = '播放中';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                // 1. 记录首响
+                if (ttfb === 0) {
+                    ttfb = performance.now() - startTime;
+                    document.getElementById('statTtfb').innerText = ttfb.toFixed(0);
+                    tr.querySelector('.ttfb').innerText = ttfb.toFixed(0);
+                    
+                    // 初始化播放时间：如果当前时间比 context 时间晚，就从当前开始
+                    // 稍微加一点点延迟(0.1s)保证平滑
+                    nextStartTime = audioCtx.currentTime + 0.1;
+                }
+
+                // 2. 处理音频数据 (核心逻辑)
+                let audioData = value; // Uint8Array
+
+                // 如果是第一包，里面包含 44字节的 WAV 头，必须切掉，否则会爆音
+                if (isFirstChunk) {
+                    if (audioData.length > 44) {
+                        audioData = audioData.slice(44);
+                    }
+                    isFirstChunk = false;
+                }
+
+                // 3. 将二进制流 (Int16) 转换为 WebAudio 能够播放的 (Float32)
+                // 注意：服务器返回的是 PCM 16bit Little Endian
+                // Uint8Array (bytes) -> Int16Array (samples)
+                // 确保字节对齐 (有些网络包可能不是偶数长度，这里简化处理，假设是偶数)
+                if (audioData.length % 2 !== 0) {
+                    // 简单截断多余的一个字节，防止报错
+                    audioData = audioData.slice(0, audioData.length - 1);
+                }
+                
+                const int16Data = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.byteLength / 2);
+                const float32Data = new Float32Array(int16Data.length);
+                
+                // 归一化：将 Int16 [-32768, 32767] 映射到 Float32 [-1.0, 1.0]
+                for (let i = 0; i < int16Data.length; i++) {
+                    float32Data[i] = int16Data[i] / 32768.0;
+                }
+
+                // 4. 创建 AudioBuffer 并播放
+                if (float32Data.length > 0) {
+                    const audioBuffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
+                    audioBuffer.copyToChannel(float32Data, 0);
+
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioCtx.destination);
+                    
+                    // 调度播放：无缝衔接
+                    // 如果计算出的下一块时间已经过去了(网络卡顿)，就重置为当前时间
+                    if (nextStartTime < audioCtx.currentTime) {
+                        nextStartTime = audioCtx.currentTime;
+                    }
+                    
+                    source.start(nextStartTime);
+                    // 更新下一块的开始时间
+                    nextStartTime += audioBuffer.duration;
+                }
+
+                // 更新界面
+                receivedBytes += value.length;
+                tr.querySelector('.progress').innerText = (receivedBytes / 1024).toFixed(0) + ' KB';
+            }
+
+            tr.querySelector('.info').innerText = "接收并播放完毕";
+            tr.querySelector('.badge').className = 'badge b-done';
+            tr.querySelector('.badge').innerText = '完成';
+
+        } catch (e) {
+            console.error(e);
+            tr.querySelector('.info').innerText = "出错: " + e.message;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
