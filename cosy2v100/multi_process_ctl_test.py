@@ -191,6 +191,57 @@ def main():
     # 合并结果
     merge_results(output_dir, args.processes)
 
+    # 生成合并后的 HTML 报告
+    try:
+        from multi_process_test import TestResult, generate_html_report
+
+        # 读取所有结果用于生成 HTML
+        all_test_results = []
+        for pid in range(args.processes):
+            process_dir = output_dir / f"process_{pid + 1}"
+            if process_dir.exists():
+                for result_file in process_dir.glob("*_results.json"):
+                    try:
+                        with open(result_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            for r in data.get('results', []):
+                                # 转换为 TestResult 对象
+                                result = TestResult(
+                                    task_id=r['task_id'],
+                                    batch_id=r['batch_id'],
+                                    start_time=r['start_time'],
+                                    ttfb_time=r.get('ttfb_time'),
+                                    end_time=r.get('end_time'),
+                                    ttfb_ms=r['ttfb_ms'],
+                                    total_time_ms=r['time'],
+                                    duration_s=r['duration'],
+                                    rtf=r['rtf'],
+                                    success=r['success'],
+                                    error_msg=r.get('error_msg'),
+                                    wav_file=r.get('wav_file')
+                                )
+                                all_test_results.append(result)
+                    except Exception as e:
+                        print(f"  警告：无法读取 {result_file}: {e}")
+
+        if all_test_results:
+            test_params = {
+                'url': args.url,
+                'concurrency': args.concurrency,
+                'batches': args.batches,
+                'processes': args.processes,
+                'text': args.text,
+                'prompt_text': args.prompt_text,
+                'audio_file': str(audio_file)
+            }
+
+            merged_html = output_dir / f"merged_report_{int(time.time())}.html"
+            # 对于合并报告，需要特殊处理音频路径
+            generate_html_report(all_test_results, merged_html, test_params, output_dir, is_merged=True)
+            print(f"\n📄 合并后的 HTML 报告已生成: {merged_html}")
+    except Exception as e:
+        print(f"\n⚠️ 生成合并 HTML 报告时出错: {e}")
+
 
 if __name__ == "__main__":
     # Windows 下多进程保护

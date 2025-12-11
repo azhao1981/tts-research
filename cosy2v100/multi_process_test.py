@@ -129,7 +129,7 @@ async def run_concurrent_tests(
     audio_file: Path,
     output_dir: Path,
     save_wav: bool = True
-) -> List[TestResult]:
+) -> tuple[List[TestResult], Path]:
     """运行并发测试"""
     # 创建输出目录
     batch_dir = output_dir / batch_id
@@ -176,7 +176,7 @@ async def run_concurrent_tests(
             else:
                 processed_results.append(r)
 
-        return processed_results
+        return processed_results, batch_dir
 
 
 def save_results(results: List[TestResult], output_file: Path):
@@ -194,6 +194,284 @@ def save_results(results: List[TestResult], output_file: Path):
 
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def generate_html_report(results: List[TestResult], output_file: Path, test_params: Dict[str, Any] = None, base_dir: Path = None, is_merged: bool = False):
+    """生成 HTML 测试报告"""
+    if not results:
+        return
+
+    success_results = [r for r in results if r.success]
+
+    # 计算统计数据
+    avg_ttfb = sum(r.ttfb_ms for r in success_results) / len(success_results) if success_results else 0
+    avg_rtf = sum(r.rtf for r in success_results) / len(success_results) if success_results else 0
+    avg_duration = sum(r.duration_s for r in success_results) / len(success_results) if success_results else 0
+
+    success_rate = len(success_results) / len(results) * 100 if results else 0
+
+    # HTML 模板
+    html_template = f"""
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS 压测报告 - {results[0].batch_id if results else 'Unknown'}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f7f9fc;
+            line-height: 1.6;
+        }}
+        .container {{
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }}
+        h1 {{
+            color: #1f2937;
+            margin-top: 0;
+            border-bottom: 3px solid #3b82f6;
+            padding-bottom: 15px;
+        }}
+        h2 {{
+            color: #374151;
+            margin-top: 30px;
+        }}
+        .summary {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }}
+        .stat-card {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }}
+        .stat-value {{
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }}
+        .stat-label {{
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }}
+        .params {{
+            background-color: #f3f4f6;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }}
+        .param-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }}
+        .param-item {{
+            display: flex;
+            justify-content: space-between;
+        }}
+        .param-label {{
+            font-weight: 600;
+            color: #6b7280;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 0.9rem;
+        }}
+        th {{
+            background-color: #f9fafb;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #4b5563;
+            border-bottom: 2px solid #e5e7eb;
+        }}
+        td {{
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }}
+        tr:hover {{
+            background-color: #f9fafb;
+        }}
+        .success {{
+            color: #059669;
+            font-weight: 600;
+        }}
+        .failure {{
+            color: #dc2626;
+            font-weight: 600;
+        }}
+        .download-link {{
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 600;
+        }}
+        .download-link:hover {{
+            text-decoration: underline;
+        }}
+        .chart-container {{
+            margin: 30px 0;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }}
+        .footer {{
+            text-align: center;
+            color: #6b7280;
+            margin-top: 40px;
+            font-size: 0.85rem;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TTS 语音合成压测报告</h1>
+
+        <div class="summary">
+            <div class="stat-card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <div class="stat-value">{len(results)}</div>
+                <div class="stat-label">总请求数</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                <div class="stat-value">{len(success_results)}</div>
+                <div class="stat-label">成功请求数</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                <div class="stat-value">{success_rate:.1f}%</div>
+                <div class="stat-label">成功率</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+                <div class="stat-value">{avg_ttfb:.0f}</div>
+                <div class="stat-label">平均 TTFB (ms)</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                <div class="stat-value">{avg_rtf:.3f}</div>
+                <div class="stat-label">平均 RTF</div>
+            </div>
+            <div class="stat-card" style="background: linear-gradient(135deg, #30cfd0 0%, #330867 100%);">
+                <div class="stat-value">{avg_duration:.2f}</div>
+                <div class="stat-label">平均音频时长 (s)</div>
+            </div>
+        </div>
+
+        <h2>测试参数</h2>
+        <div class="params">
+            <div class="param-grid">
+                <div class="param-item">
+                    <span class="param-label">批次 ID:</span>
+                    <span>{results[0].batch_id if results else 'N/A'}</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">并发数:</span>
+                    <span>{test_params.get('concurrency', 'N/A')}</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">批次数:</span>
+                    <span>{test_params.get('batches', 'N/A')}</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">URL:</span>
+                    <span>{test_params.get('url', 'N/A')}</span>
+                </div>
+            </div>
+        </div>
+
+        <h2>详细结果</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>任务ID</th>
+                    <th>开始时间</th>
+                    <th>首响时间</th>
+                    <th>结束时间</th>
+                    <th>TTFB (ms)</th>
+                    <th>总耗时 (ms)</th>
+                    <th>音频时长 (s)</th>
+                    <th>RTF</th>
+                    <th>状态</th>
+                    <th>音频文件</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+
+    # 生成表格行
+    for r in results:
+        status_class = "success" if r.success else "failure"
+        status_text = "成功" if r.success else "失败"
+
+        wav_link = ""
+        if r.wav_file and r.success:
+            wav_path = Path(r.wav_file)
+            if is_merged and base_dir:
+                # 对于合并报告，计算相对于输出目录的相对路径
+                relative_path = wav_path.relative_to(base_dir)
+                wav_link = f'<a href="{relative_path}" class="download-link" download>{wav_path.name}</a>'
+            else:
+                # 对于单批次报告，HTML 和 WAV 在同一目录
+                wav_link = f'<a href="{wav_path.name}" class="download-link" download>{wav_path.name}</a>'
+
+        # 预计算格式化值
+        ttfb_val = f"{r.ttfb_ms:.0f}" if r.success else '-'
+        time_val = f"{r.total_time_ms:.0f}" if r.success else '-'
+        duration_val = f"{r.duration_s:.2f}" if r.success else '-'
+        rtf_val = f"{r.rtf:.3f}" if r.success else '-'
+
+        html_template += f"""
+                <tr>
+                    <td>{r.task_id}</td>
+                    <td>{format_time(r.start_time)}</td>
+                    <td>{format_time(r.ttfb_time) if r.ttfb_time else '-'}</td>
+                    <td>{format_time(r.end_time) if r.end_time else '-'}</td>
+                    <td>{ttfb_val}</td>
+                    <td>{time_val}</td>
+                    <td>{duration_val}</td>
+                    <td>{rtf_val}</td>
+                    <td class="{status_class}">{status_text}</td>
+                    <td>{wav_link}</td>
+                </tr>"""
+
+    html_template += f"""
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">
+        报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |
+        数据来源: TTS 压测工具
+    </div>
+</body>
+</html>
+"""
+
+    # 保存 HTML 文件
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(html_template)
+
+
+def format_time(time_str: Optional[str]) -> str:
+    """格式化时间显示"""
+    if not time_str:
+        return '-'
+    try:
+        dt = datetime.fromisoformat(time_str)
+        return dt.strftime('%H:%M:%S.%f')[:-3]
+    except Exception:
+        return time_str
 
 
 def print_summary(results: List[TestResult]):
@@ -268,7 +546,7 @@ async def main():
         print(f"\n📦 批次 {batch_idx + 1}/{args.batches} (ID: {batch_id})")
 
         # 运行当前批次
-        results = await run_concurrent_tests(
+        results, batch_dir = await run_concurrent_tests(
             batch_id=batch_id,
             concurrency=args.concurrency,
             url=args.url,
@@ -285,6 +563,21 @@ async def main():
         batch_file = output_dir / f"{batch_id}_results.json"
         save_results(results, batch_file)
         print(f"  结果已保存到: {batch_file}")
+
+        # 生成 HTML 报告
+        test_params = {
+            'url': args.url,
+            'concurrency': args.concurrency,
+            'batches': args.batches,
+            'text': args.text,
+            'prompt_text': args.prompt_text,
+            'audio_file': str(audio_file)
+        }
+
+        # HTML 报告保存在批次目录中，这样相对路径才能正确工作
+        html_file = batch_dir / f"{batch_id}_report.html"
+        generate_html_report(results, html_file, test_params)
+        print(f"  HTML 报告已生成: {html_file}")
 
         # 打印摘要
         print_summary(results)

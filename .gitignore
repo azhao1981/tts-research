@@ -2,6 +2,7 @@
 CLAUDE.md
 .vscode
 .priv
+.*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
