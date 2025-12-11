@@ -14,3 +14,6 @@ git clone git@github.com:FunAudioLLM/CosyVoice.git
 
 https://www.bilibili.com/video/BV1fZNBeLEeM/
 
+## opz
+
+https://blog.csdn.net/gitblog_00003/article/details/151329543
