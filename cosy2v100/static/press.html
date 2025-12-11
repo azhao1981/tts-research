@@ -67,6 +67,52 @@
             50% { opacity: 0.7; }
             100% { opacity: 1; }
         }
+
+        /* 历史记录表格样式 */
+        .history-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #e5e7eb;
+        }
+        .history-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .history-title h3 {
+            margin: 0;
+            font-size: 1.2rem;
+            color: #374151;
+        }
+        .clear-history-btn {
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .clear-history-btn:hover {
+            background: #dc2626;
+        }
+        #historyTable {
+            font-size: 0.85rem;
+        }
+        #historyTable th {
+            background-color: #f9fafb;
+            font-weight: 600;
+            color: #4b5563;
+        }
+        #historyTable td {
+            padding: 10px 12px;
+        }
+        .batch-info {
+            font-size: 0.75rem;
+            color: #6b7280;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -124,10 +170,41 @@
         </thead>
         <tbody id="resultBody"></tbody>
     </table>
+
+    <!-- 历史记录区域 -->
+    <div class="history-section">
+        <div class="history-title">
+            <h3>测试记录</h3>
+            <button class="clear-history-btn" onclick="clearHistory()">清空记录</button>
+        </div>
+        <table id="historyTable">
+            <thead>
+                <tr>
+                    <th>批次 ID</th>
+                    <th>开始时间</th>
+                    <th>#</th>
+                    <th>TTFB (ms)</th>
+                    <th>耗时 (ms)</th>
+                    <th>时长 (s)</th>
+                    <th>RTF</th>
+                    <th>状态</th>
+                </tr>
+            </thead>
+            <tbody id="historyBody"></tbody>
+        </table>
+    </div>
 </div>
 
 <script>
     let audioCtx;
+    let testStartTime;
+    let currentBatchId;
+    let testHistory = JSON.parse(localStorage.getItem('ttsTestHistory') || '[]');
+
+    // 页面加载时显示历史记录
+    window.onload = () => {
+        loadHistory();
+    };
 
     async function startTest() {
         // 1. 获取输入
@@ -136,6 +213,10 @@
         const promptText = document.getElementById('promptTextInput').value;
         const fileInput = document.getElementById('audioFile');
         const count = parseInt(document.getElementById('concurrency').value);
+
+        // 0. 记录测试开始时间和批次ID
+        testStartTime = new Date();
+        currentBatchId = 'B' + Date.now().toString().slice(-6);
 
         // 2. 校验文件
         if (fileInput.files.length === 0) {
@@ -260,6 +341,9 @@
                 playBtn.onclick = () => playAudioOnClick(tr);
             }
 
+            // 保存单条测试记录
+            saveSingleTestResult(id, ttfb, totalTime, duration, rtf, true);
+
             updateStatsSummary();
             updateStatus(tr, 'b-done', '就绪');
 
@@ -267,6 +351,9 @@
             console.error(e);
             updateStatus(tr, 'b-error', '失败');
             tr.cells[4].innerHTML = `<div class="error-msg">${e.message}</div>`;
+
+            // 保存失败记录
+            saveSingleTestResult(id, 0, 0, 0, 0, false);
         }
     }
 
@@ -335,18 +422,94 @@
     function updateStatsSummary() {
         const rows = Array.from(document.querySelectorAll('#resultBody tr'));
         const successRows = rows.filter(r => r.dataset.success === "1");
-        
+
         if (successRows.length === 0) return;
 
         // 计算平均值
         const avgTtfb = successRows.reduce((a, r) => a + parseFloat(r.dataset.ttfb), 0) / successRows.length;
         const avgRtf = successRows.reduce((a, r) => a + parseFloat(r.dataset.rtf), 0) / successRows.length;
-        
+
         document.getElementById('avgTtfb').innerText = avgTtfb.toFixed(0) + ' ms';
         document.getElementById('avgRtf').innerText = avgRtf.toFixed(3);
 
         const total = document.getElementById('concurrency').value;
         document.getElementById('successRate').innerText = Math.round((successRows.length / total) * 100) + '%';
+    }
+
+    // 保存单条测试记录
+    function saveSingleTestResult(id, ttfb, time, duration, rtf, success) {
+        const record = {
+            batchId: currentBatchId,
+            startTime: testStartTime.toISOString(),
+            id: id,
+            ttfb: ttfb.toFixed(0),
+            time: time.toFixed(0),
+            duration: duration.toFixed(2),
+            rtf: rtf.toFixed(3),
+            success: success
+        };
+
+        // 添加到历史记录
+        testHistory.unshift(record);
+
+        // 限制历史记录数量（最多保存200条，因为是单个请求的记录）
+        if (testHistory.length > 200) {
+            testHistory = testHistory.slice(0, 200);
+        }
+
+        // 保存到 localStorage
+        localStorage.setItem('ttsTestHistory', JSON.stringify(testHistory));
+
+        // 更新显示
+        loadHistory();
+    }
+
+    // 加载历史记录
+    function loadHistory() {
+        const tbody = document.getElementById('historyBody');
+        tbody.innerHTML = '';
+
+        if (testHistory.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #999;">暂无测试记录</td></tr>';
+            return;
+        }
+
+        testHistory.forEach(record => {
+            const tr = document.createElement('tr');
+            const startTime = new Date(record.startTime);
+
+            tr.innerHTML = `
+                <td><strong>${record.batchId}</strong></td>
+                <td>${formatTime(startTime)}</td>
+                <td>${record.id || '-'}</td>
+                <td>${record.success ? record.ttfb : '-'}</td>
+                <td>${record.success ? record.time : '-'}</td>
+                <td>${record.success ? record.duration : '-'}</td>
+                <td>${record.success ? record.rtf : '-'}</td>
+                <td>${record.success ?
+                    '<span class="badge b-done">成功</span>' :
+                    '<span class="badge b-error">失败</span>'}</td>
+            `;
+
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 清空历史记录
+    function clearHistory() {
+        if (confirm('确定要清空所有测试记录吗？')) {
+            testHistory = [];
+            localStorage.removeItem('ttsTestHistory');
+            loadHistory();
+        }
+    }
+
+    // 格式化时间显示
+    function formatTime(date) {
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        const seconds = date.getSeconds().toString().padStart(2, '0');
+        return `${hours}:${minutes}:${seconds}`;
     }
 </script>
 
