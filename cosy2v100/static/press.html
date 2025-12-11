@@ -41,6 +41,32 @@
         .b-error { background: #fee2e2; color: #b91c1c; }
         
         .error-msg { color: #dc2626; font-size: 0.8rem; margin-top: 5px; }
+
+        /* 播放按钮样式 */
+        .play-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+        .play-btn:hover { background: #059669; }
+        .play-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        .play-btn.playing {
+            background: #f59e0b;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -89,6 +115,7 @@
             <tr>
                 <th style="width:50px">#</th>
                 <th>状态</th>
+                <th>操作</th>
                 <th>TTFB (ms)</th>
                 <th>接收耗时 (ms)</th>
                 <th>音频时长 (s)</th>
@@ -146,6 +173,7 @@
         tr.innerHTML = `
             <td>${id}</td>
             <td><span class="badge b-wait">准备中</span></td>
+            <td><button class="play-btn" disabled>▶️ 播放</button></td>
             <td>-</td>
             <td>-</td>
             <td>-</td>
@@ -216,19 +244,22 @@
             // 计算 RTF = 处理耗时 / 音频时长
             const rtf = (totalTime / 1000) / duration;
 
-            tr.cells[4].innerText = duration.toFixed(2);
-            tr.cells[5].innerText = rtf.toFixed(3);
-            
-            // 标记数据以便统计
+            tr.cells[5].innerText = duration.toFixed(2);
+            tr.cells[6].innerText = rtf.toFixed(3);
+
+            // 存储音频数据并启用播放按钮
+            tr.audioBuffer = audioBuffer;
             tr.dataset.ttfb = ttfb;
             tr.dataset.rtf = rtf;
             tr.dataset.success = "1";
-            
-            updateStatsSummary();
-            updateStatus(tr, 'b-play', '播放中');
 
-            // 播放
-            playAudio(audioBuffer, tr);
+            // 启用播放按钮
+            const playBtn = tr.cells[2].querySelector('.play-btn');
+            playBtn.disabled = false;
+            playBtn.onclick = () => playAudioOnClick(tr);
+
+            updateStatsSummary();
+            updateStatus(tr, 'b-done', '就绪');
 
         } catch (e) {
             console.error(e);
@@ -243,7 +274,53 @@
         source.connect(audioCtx.destination);
         source.start(0);
         source.onended = () => {
-            updateStatus(tr, 'b-done', '完成');
+            updateStatus(tr, 'b-done', '就绪');
+            const playBtn = tr.cells[2].querySelector('.play-btn');
+            playBtn.classList.remove('playing');
+            playBtn.innerText = '▶️ 播放';
+        };
+    }
+
+    // 点击播放功能
+    function playAudioOnClick(tr) {
+        const playBtn = tr.cells[2].querySelector('.play-btn');
+
+        // 如果正在播放，停止播放
+        if (playBtn.classList.contains('playing')) {
+            // 停止当前播放的音频
+            if (tr.currentSource) {
+                tr.currentSource.stop();
+                tr.currentSource = null;
+            }
+            return;
+        }
+
+        // 检查是否有音频数据
+        if (!tr.audioBuffer) {
+            alert('没有可播放的音频数据');
+            return;
+        }
+
+        // 更新按钮状态
+        playBtn.classList.add('playing');
+        playBtn.innerText = '⏸️ 停止';
+        updateStatus(tr, 'b-play', '播放中');
+
+        // 创建并播放音频
+        const source = audioCtx.createBufferSource();
+        source.buffer = tr.audioBuffer;
+        source.connect(audioCtx.destination);
+        source.start(0);
+
+        // 保存 source 引用以便停止
+        tr.currentSource = source;
+
+        // 播放结束处理
+        source.onended = () => {
+            playBtn.classList.remove('playing');
+            playBtn.innerText = '▶️ 播放';
+            updateStatus(tr, 'b-done', '就绪');
+            tr.currentSource = null;
         };
     }
 
