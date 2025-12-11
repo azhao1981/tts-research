@@ -6,6 +6,8 @@ import io
 import torchaudio
 import torchaudio.transforms as T
 import soundfile as sf
+import os
+model_dir = os.getenv("FINETURED_COSYVOICE2_MODEL_PATH", "pretrained_models/CosyVoice2-0.5B-finetune")
 
 class OptimizedCosyService:
     def __init__(self, model_dir='pretrained_models/CosyVoice2-0.5B-finetune'):
