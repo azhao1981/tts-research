@@ -182,6 +182,8 @@
                 <tr>
                     <th>批次 ID</th>
                     <th>开始时间</th>
+                    <th>首响时间</th>
+                    <th>结束时间</th>
                     <th>#</th>
                     <th>TTFB (ms)</th>
                     <th>耗时 (ms)</th>
@@ -267,10 +269,11 @@
         formData.append('text', text);
         formData.append('prompt_text', promptText);
         // 注意：这里对应 files={'prompt_audio': ...}
-        formData.append('prompt_audio', file); 
+        formData.append('prompt_audio', file);
 
         const startTime = performance.now();
         let ttfb = 0;
+        let ttfbTime = null; // 记录首响的实际时间
 
         try {
             // 发起请求
@@ -295,6 +298,7 @@
                 // 收到第一个包：记录 TTFB
                 if (ttfb === 0) {
                     ttfb = performance.now() - startTime;
+                    ttfbTime = new Date(); // 记录首响的实际时间
                     tr.cells[3].innerText = ttfb.toFixed(0);
                 }
 
@@ -307,6 +311,7 @@
             // 接收完成
             const endTime = performance.now();
             const totalTime = endTime - startTime; // 网络传输总耗时
+            const actualEndTime = new Date(); // 记录结束的实际时间
             tr.cells[4].innerText = totalTime.toFixed(0);
 
             // 合并二进制数据
@@ -342,7 +347,7 @@
             }
 
             // 保存单条测试记录
-            saveSingleTestResult(id, ttfb, totalTime, duration, rtf, true);
+            saveSingleTestResult(id, ttfb, totalTime, duration, rtf, true, ttfbTime, actualEndTime);
 
             updateStatsSummary();
             updateStatus(tr, 'b-done', '就绪');
@@ -353,7 +358,7 @@
             tr.cells[4].innerHTML = `<div class="error-msg">${e.message}</div>`;
 
             // 保存失败记录
-            saveSingleTestResult(id, 0, 0, 0, 0, false);
+            saveSingleTestResult(id, 0, 0, 0, 0, false, null, new Date());
         }
     }
 
@@ -437,10 +442,12 @@
     }
 
     // 保存单条测试记录
-    function saveSingleTestResult(id, ttfb, time, duration, rtf, success) {
+    function saveSingleTestResult(id, ttfb, time, duration, rtf, success, ttfbTime, endTime) {
         const record = {
             batchId: currentBatchId,
             startTime: testStartTime.toISOString(),
+            ttfbTime: ttfbTime ? ttfbTime.toISOString() : null,
+            endTime: endTime ? endTime.toISOString() : null,
             id: id,
             ttfb: ttfb.toFixed(0),
             time: time.toFixed(0),
@@ -470,17 +477,21 @@
         tbody.innerHTML = '';
 
         if (testHistory.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #999;">暂无测试记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #999;">暂无测试记录</td></tr>';
             return;
         }
 
         testHistory.forEach(record => {
             const tr = document.createElement('tr');
             const startTime = new Date(record.startTime);
+            const ttfbTime = record.ttfbTime ? new Date(record.ttfbTime) : null;
+            const endTime = record.endTime ? new Date(record.endTime) : null;
 
             tr.innerHTML = `
                 <td><strong>${record.batchId}</strong></td>
                 <td>${formatTime(startTime)}</td>
+                <td>${ttfbTime ? formatTime(ttfbTime) : '-'}</td>
+                <td>${endTime ? formatTime(endTime) : '-'}</td>
                 <td>${record.id || '-'}</td>
                 <td>${record.success ? record.ttfb : '-'}</td>
                 <td>${record.success ? record.time : '-'}</td>
@@ -509,7 +520,8 @@
         const hours = date.getHours().toString().padStart(2, '0');
         const minutes = date.getMinutes().toString().padStart(2, '0');
         const seconds = date.getSeconds().toString().padStart(2, '0');
-        return `${hours}:${minutes}:${seconds}`;
+        const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${milliseconds}`;
     }
 </script>
 
