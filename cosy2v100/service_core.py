@@ -28,7 +28,7 @@ class OptimizedCosyService:
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            fp16=False 
+            fp16=True 
         )
         
         # ----------------------------------------------------------------------
@@ -52,7 +52,7 @@ class OptimizedCosyService:
         # ----------------------------------------------------------------------
 
         # 2. 编译优化
-        if torch.cuda.is_available():
+        if False and torch.cuda.is_available():
             print("[Init] Compiling sub-modules (LLM & Flow) with torch.compile...")
             try:
                 # 注意：torch.compile 会自动处理量化后的算子
