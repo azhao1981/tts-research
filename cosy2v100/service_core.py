@@ -7,10 +7,10 @@ import torchaudio
 import torchaudio.transforms as T
 import soundfile as sf
 import os
-model_dir = os.getenv("FINETURED_COSYVOICE2_MODEL_PATH", "pretrained_models/CosyVoice2-0.5B-finetune")
+FINETURED_COSYVOICE2_MODEL_PATH = os.getenv("FINETURED_COSYVOICE2_MODEL_PATH", "pretrained_models/CosyVoice2-0.5B-finetune")
 
 class OptimizedCosyService:
-    def __init__(self, model_dir='pretrained_models/CosyVoice2-0.5B-finetune'):
+    def __init__(self, model_dir=FINETURED_COSYVOICE2_MODEL_PATH):
         print(f"[Init] Loading model from {model_dir} on V100...")
         
         # 1. 加载模型 (FP16)
