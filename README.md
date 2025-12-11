@@ -10,7 +10,6 @@ git clone git@github.com:FunAudioLLM/CosyVoice.git
 
  流式服务 首响 RTF
 
-
 ## cosyvoice2 train
 
 https://www.bilibili.com/video/BV1fZNBeLEeM/
