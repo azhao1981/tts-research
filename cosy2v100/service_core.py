@@ -28,7 +28,7 @@ class OptimizedCosyService:
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            fp16=True 
+            fp16=False 
         )
         
         # ----------------------------------------------------------------------
