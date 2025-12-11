@@ -28,7 +28,8 @@ class OptimizedCosyService:
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            fp16=False 
+            # fp16=False,
+            fp16=True,
         )
         
         # ----------------------------------------------------------------------
@@ -110,4 +111,5 @@ class OptimizedCosyService:
 
 # 使用示例：你可以传入 'int8' 或 'int4'
 # int8 推荐用于 V100，既省显存又利用 Tensor Core
-service_instance = OptimizedCosyService(quantization_mode='int8')
+# service_instance = OptimizedCosyService(quantization_mode='int8')
+service_instance = OptimizedCosyService()
