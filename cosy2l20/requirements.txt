@@ -1,3 +1,5 @@
 --index-url "https://mirrors.aliyun.com/pypi/simple"
 torchao
 modelscope
+pip
+packaging
