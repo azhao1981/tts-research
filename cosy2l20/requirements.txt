@@ -3,3 +3,7 @@ torchao
 modelscope
 pip
 packaging
+fastapi
+uvicorn
+gunicorn
+python-multipart
