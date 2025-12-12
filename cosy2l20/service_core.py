@@ -1,5 +1,6 @@
 import torch
 import sys
+
 sys.path.append('third_party/Matcha-TTS')
 from cosyvoice.cli.cosyvoice import CosyVoice2
 import io
@@ -28,10 +29,14 @@ class OptimizedCosyService:
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            # fp16=False,
-            fp16=True,
+            fp16=False,
+            # fp16=True,
         )
-        
+        # 2. ✅ 手动转为 Bfloat16 (L20 专用神器)
+        #    Bfloat16 不会溢出，完美解决 "probability tensor contains inf/nan"
+        if torch.cuda.is_available():
+            print("[Init] Converting model to Bfloat16...")
+            self.model.model.to(torch.bfloat16)
         # ----------------------------------------------------------------------
         # 【核心修改】在此处插入量化逻辑 (必须在 compile 之前)
         # ----------------------------------------------------------------------

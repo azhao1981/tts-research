@@ -33,3 +33,22 @@ uv pip install onnxruntime-gpu==1.18.0 --index-url https://aiinfra.pkgs.visualst
 # 因为你的系统 CUDA (12.8) 和 Torch 自带的 CUDA (12.1) 版本号不完全一致，DeepSpeed 可能会报错。我们把它单独拿出来，强制跳过版本检查进行安装。
 # 使用清华源加速，并跳过 CUDA 版本严格检查
 DS_SKIP_CUDA_CHECK=1 uv pip install deepspeed==0.15.1 -i "https://mirrors.aliyun.com/pypi/simple"
+
+uv pip install -r cosy2l20/requirements_final.txt
+# uv pip 或是 pip install 都不行，但下面的可以
+python -m pip install tensorrt-cu12==10.0.1 tensorrt-cu12-bindings==10.0.1 tensorrt-cu12-libs==10.0.1
+
+python -c "import tensorrt; print(f'TensorRT version: {tensorrt.__version__}')"
+# TensorRT version: 10.0.1
+
+pip uninstall -y transformers torchao
+pip install transformers==4.44.2
+
+ssh root@39.105.98.32
+git submodule update --init --recursive
+# Submodule 'third_party/Matcha-TTS' (https://github.com/shivammehta25/Matcha-TTS.git) registered for path 'third_party/Matcha-TTS'
+# Cloning into '/root/tts/CosyVoice/third_party/Matcha-TTS'...
+# Submodule path 'third_party/Matcha-TTS': checked out 'dd9105b34bf2be2230f4aa1e4769fb586a3c824e'
+
+http://39.105.98.32:13099
+http://39.105.98.32:13099/stream
