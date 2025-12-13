@@ -51,7 +51,7 @@ class OptimizedCosyService:
                 self.model.model.hift.to(dtype=torch.bfloat16)
             print("✅ All modules converted to Bfloat16.")
 
-        # 3. ✅ 应用 Monkey Patch 2.0 (强制前端走 CPU)
+        # 3. ✅ 应用 Monkey Patch 3.0 (修复设备+精度冲突)
         self._apply_frontend_patch()
 
         # 4. 量化逻辑 (torchao)
@@ -75,10 +75,11 @@ class OptimizedCosyService:
             except Exception as e:
                 print(f"[Warn] Compile failed: {e}")
         
-        # 6. 预热 (Warmup) - 修正版
+        # 6. 预热 (Warmup)
         print("[Init] Warming up...")
         try:
-            # ✅ 修复点：添加维度 (1, 16000) 而不是 (16000)
+            # 构造 FP32 输入 (Patch 会把它挪回 CPU 处理)
+            # 注意形状必须是 (1, 16000)
             dummy_wav = torch.randn(1, 16000, device=self.device)
             
             # 使用 Autocast 桥接
@@ -99,32 +100,41 @@ class OptimizedCosyService:
 
     def _apply_frontend_patch(self):
         """
-        Monkey Patch 2.0:
-        前端（音频处理）强制在 CPU 上以 FP32 运行，彻底解决设备和类型冲突。
-        处理完后，自动把结果搬回 GPU 给模型用。
+        Monkey Patch 3.0:
+        1. 强制前端在 CPU 上以 FP32 运行。
+        2. 将结果搬回 GPU 时，智能地将浮点数转为 BFloat16，整数保持不变。
+        这是解决 "Float vs BFloat16" 和 "CPU vs GPU" 冲突的终极方案。
         """
-        print("[Init] Applying Frontend Patch (Force CPU & Disable Autocast)...")
+        print("[Init] Applying Frontend Patch (Force CPU & Align Dtype)...")
         
         # 拿到原始方法
         original_frontend_func = self.model.frontend.frontend_zero_shot
 
         # 定义补丁函数
         def patched_frontend_zero_shot(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id):
-            # 1. 输入回退到 CPU
+            # 1. 输入回退到 CPU (FP32)
             if isinstance(prompt_speech_16k, torch.Tensor) and prompt_speech_16k.is_cuda:
                 prompt_speech_16k = prompt_speech_16k.cpu()
 
-            # 2. 强制禁用 Autocast (FP32模式)
+            # 2. 强制禁用 Autocast 运行前端
             if torch.cuda.is_available():
                 with torch.amp.autocast('cuda', enabled=False):
                     model_input = original_frontend_func(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id)
             else:
                 model_input = original_frontend_func(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id)
 
-            # 3. 输出搬运到 GPU (准备喂给 LLM/Flow)
+            # 3. 输出搬运到 GPU + 智能精度对齐
             for key, val in model_input.items():
                 if isinstance(val, torch.Tensor):
-                    model_input[key] = val.to(self.device)
+                    # 先移到 GPU
+                    val = val.to(self.device)
+                    
+                    # 关键修复：如果是浮点数(Embedding/Feat)，转为 BF16 以匹配模型权重
+                    # 如果是整数(Lengths/Codes)，保持原样
+                    if val.is_floating_point():
+                        val = val.to(dtype=torch.bfloat16)
+                    
+                    model_input[key] = val
             
             return model_input
 
@@ -145,12 +155,11 @@ class OptimizedCosyService:
         # 1. 加载音频 (CPU Float32)
         prompt_speech_16k = self.safe_load_prompt(prompt_wav, 16000)
         
-        # 2. 移动到 CUDA (保持 FP32)
-        # Monkey Patch 会负责把它暂时挪回 CPU，这里放 GPU 也没事，
+        # 2. 移动到 CUDA
         if torch.cuda.is_available():
             prompt_speech_16k = prompt_speech_16k.to(self.device)
         
-        # 3. 推理 (Autocast 开启，LLM 需要 BF16)
+        # 3. 推理 (Autocast 开启)
         try:
             with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                 generator = self.model.inference_zero_shot(
@@ -162,6 +171,7 @@ class OptimizedCosyService:
                 
                 for i, output in enumerate(generator):
                     audio_tensor = output['tts_speech'].cpu()
+                    # 转回 float32 供 soundfile 使用
                     audio_numpy = audio_tensor.squeeze().float().numpy()
                     
                     buffer = io.BytesIO()
