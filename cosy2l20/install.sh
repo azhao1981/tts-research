@@ -54,7 +54,7 @@ http://39.105.98.32:13099
 http://39.105.98.32:13099/stream
 
 ssh root@123.57.26.77
-http://123.57.26.77:13099
+http://123.57.26.77:13099/web
 http://123.57.26.77:13099/stream
 
 uv pip install ninja packaging

@@ -32,3 +32,14 @@ FunAudioLLM/CosyVoice.git
 ## 安装
 
 workv3:/task/tts/l20.2.md
+
+## waring
+
+/root/tts/tts-research/.venv/lib/python3.10/site-packages/lightning/fabric/__init__.py:41: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+/root/tts/tts-research/.venv/lib/python3.10/site-packages/diffusers/models/lora.py:393: FutureWarning: `LoRACompatibleLinear` is deprecated and will be removed in version 1.0.0. Use of `LoRACompatibleLinear` is deprecated. Please switch to PEFT backend by installing PEFT: `pip install peft`.
+
+## error 
+
+We detected that you are passing `past_key_values` as a tuple and this is deprecated and will be removed in v4.43. Please use an appropriate `Cache` class (https://huggingface.co/docs/transformers/v4.41.3/en/internal/generation_utils#transformers.Cache)
+  0%|                                                                                                                                 | 0/2 [00:04<?, ?it/s]
+❌ Error: mat1 and mat2 must have the same dtype, but got Float and BFloat16

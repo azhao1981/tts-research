@@ -8,6 +8,11 @@ import torchaudio
 import torchaudio.transforms as T
 import soundfile as sf
 import os
+# 强制启用 Flash Attention 后端
+# 显式开启 SDPA (Scaled Dot Product Attention) 的优化上下文。
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_math_sdp(False) # 禁用慢速数学后端
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 # 【新增】引入 torchao 的量化函数
 try:
