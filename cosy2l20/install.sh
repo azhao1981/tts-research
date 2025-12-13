@@ -56,6 +56,7 @@ http://39.105.98.32:13099/stream
 ssh root@123.57.26.77
 http://123.57.26.77:13099
 http://123.57.26.77:13099/stream
+
 uv pip install ninja packaging
 # 1. 强制使用所有核心进行编译 最好不要用完
 export MAX_JOBS=15
