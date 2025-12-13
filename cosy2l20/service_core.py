@@ -75,11 +75,12 @@ class OptimizedCosyService:
             except Exception as e:
                 print(f"[Warn] Compile failed: {e}")
         
-        # 6. 预热 (Warmup)
+        # 6. 预热 (Warmup) - 修正版
         print("[Init] Warming up...")
         try:
-            # 构造 FP32 输入 (Patch 会把它挪回 CPU 处理)
-            dummy_wav = torch.randn(16000, device=self.device)
+            # ✅ 修复点：添加维度 (1, 16000) 而不是 (16000)
+            dummy_wav = torch.randn(1, 16000, device=self.device)
+            
             # 使用 Autocast 桥接
             with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                 list(self.model.inference_zero_shot(
@@ -146,7 +147,6 @@ class OptimizedCosyService:
         
         # 2. 移动到 CUDA (保持 FP32)
         # Monkey Patch 会负责把它暂时挪回 CPU，这里放 GPU 也没事，
-        # 或者为了省去传输开销，这里也可以直接注释掉 .to(device)，让它一开始就在 CPU
         if torch.cuda.is_available():
             prompt_speech_16k = prompt_speech_16k.to(self.device)
         
