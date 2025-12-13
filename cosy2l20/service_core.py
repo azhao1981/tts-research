@@ -8,13 +8,13 @@ import torchaudio
 import torchaudio.transforms as T
 import soundfile as sf
 import os
-# 强制启用 Flash Attention 后端
-# 显式开启 SDPA (Scaled Dot Product Attention) 的优化上下文。
+
+# 1. 显式开启 Flash Attention 优化上下文
 torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_math_sdp(False) # 禁用慢速数学后端
+torch.backends.cuda.enable_math_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
-# 【新增】引入 torchao 的量化函数
+# 2. 引入 torchao (如果存在)
 try:
     from torchao.quantization import quantize_, int8_weight_only, int4_weight_only
     TORCHAO_AVAILABLE = True
@@ -25,94 +25,74 @@ except ImportError:
 FINETURED_COSYVOICE2_MODEL_PATH = os.getenv("FINETURED_COSYVOICE2_MODEL_PATH", "pretrained_models/CosyVoice2-0.5B-finetune")
 
 class OptimizedCosyService:
-    # 【修改】增加 quantization_mode 参数 ('none', 'int8', 'int4')
     def __init__(self, model_dir=FINETURED_COSYVOICE2_MODEL_PATH, quantization_mode='none'):
-        print(f"[Init] Loading model from {model_dir} on V100...")
+        print(f"[Init] Loading model from {model_dir} on L20...")
         
-        # 1. 加载模型 (FP16)
+        # 1. 加载模型 (FP32加载，避免FP16溢出)
         self.model = CosyVoice2(
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            fp16=False,
-            # fp16=True,
+            fp16=False, # 必须 False，防止内部错误转换
         )
-        # 2. ✅ 手动转为 Bfloat16 (L20 专用神器)
-        #    Bfloat16 不会溢出，完美解决 "probability tensor contains inf/nan"
-        #    CosyVoice2Model 只是一个容器，没有 .to() 方法
-        #    我们需要分别把它的核心组件转为 bf16
-        # ----------------------------------------------------------------------
+        
+        # 2. ✅ 手动转为 Bfloat16 (核心修复点)
         if torch.cuda.is_available():
             print("[Init] Converting sub-modules to Bfloat16...")
+            self.device = torch.device('cuda')
             
-            # 1. 转换 LLM (核心文本理解部分)
+            # 分别转换组件
             if hasattr(self.model.model, 'llm'):
                 self.model.model.llm.to(dtype=torch.bfloat16)
-                print(" -> LLM converted to bfloat16")
             
-            # 2. 转换 Flow (核心语音生成部分)
             if hasattr(self.model.model, 'flow'):
                 self.model.model.flow.to(dtype=torch.bfloat16)
-                print(" -> Flow converted to bfloat16")
             
-            # 3. 转换 HiFT/VAE (声码器部分)
-            # 注意：如果声音听起来有底噪，可以尝试让 hift 保持 fp32
             if hasattr(self.model.model, 'hift'):
                 self.model.model.hift.to(dtype=torch.bfloat16)
-                print(" -> HiFT converted to bfloat16")
-        # ----------------------------------------------------------------------
-        # 【核心修改】在此处插入量化逻辑 (必须在 compile 之前)
-        # ----------------------------------------------------------------------
+                
+            print("✅ All modules converted to Bfloat16.")
+
+        # 3. 量化逻辑 (torchao)
         if TORCHAO_AVAILABLE and quantization_mode in ['int8', 'int4']:
             print(f"[Init] Applying {quantization_mode} quantization to LLM...")
-            
-            # 选择量化策略
-            # int8_weight_only: 显存减少约 50%，精度损失极小，推理速度快
-            # int4_weight_only: 显存减少约 75%，精度有轻微损失
             q_config = int4_weight_only() if quantization_mode == 'int4' else int8_weight_only()
-            
             try:
-                # 仅对 LLM 部分进行量化 (CosyVoice2 的大头在 LLM)
-                # Flow 部分建议保持 FP16 以保证音质细腻度
+                # 仅量化 LLM，Flow 保持 BF16 以保证音质
                 quantize_(self.model.model.llm, q_config)
-                print(f"✅ LLM module quantized to {quantization_mode} successfully.")
+                print(f"✅ LLM module quantized to {quantization_mode}.")
             except Exception as e:
                 print(f"[Error] Quantization failed: {e}")
-        # ----------------------------------------------------------------------
 
-        # 2. 编译优化
+        # 4. 编译优化 (Torch Compile)
         if torch.cuda.is_available():
-            print("[Init] Compiling sub-modules (LLM & Flow) with torch.compile...")
+            print("[Init] Compiling sub-modules...")
             try:
-                # 注意：torch.compile 会自动处理量化后的算子
-                self.model.model.llm = torch.compile(
-                    self.model.model.llm, 
-                    mode="reduce-overhead",
-                    fullgraph=False
-                )
-                self.model.model.flow = torch.compile(
-                    self.model.model.flow, 
-                    mode="reduce-overhead",
-                    fullgraph=False
-                )
-                print("✅ Torch Compile applied successfully.")
+                self.model.model.llm = torch.compile(self.model.model.llm, mode="reduce-overhead", fullgraph=False)
+                self.model.model.flow = torch.compile(self.model.model.flow, mode="reduce-overhead", fullgraph=False)
+                print("✅ Torch Compile applied.")
             except Exception as e:
-                print(f"[Warn] Compile failed, running in eager mode: {e}")
+                print(f"[Warn] Compile failed: {e}")
         
-        # 3. 预热
-        print("[Init] Warming up with 'male1_trained'...")
+        # 5. 预热 (Warmup) - 使用 Zero-shot 路径以测试 BF16 兼容性
+        print("[Init] Warming up...")
         try:
-            # 这里的 text 和 prompt 需要确保在你模型词表中存在，简单测试即可
-            list(self.model.inference_sft(
-                '这是预热文本', 'male1_trained', stream=True
+            # 构造一个假的 BF16 音频输入进行预热，确保存活
+            dummy_wav = torch.randn(16000, dtype=torch.bfloat16, device=self.device)
+            list(self.model.inference_zero_shot(
+                tts_text='预热', 
+                prompt_text='预热', 
+                prompt_speech_16k=dummy_wav, 
+                stream=True
             ))
             print("✅ Warmup done.")
         except Exception as e:
-            print(f"[Warn] Warmup skipped: {e}")
+            print(f"[Warn] Warmup skipped or failed: {e}")
             
         print("[Init] Service Ready.")
 
     def safe_load_prompt(self, wav_path, target_sr=16000):
+        # 这里的 load 默认返回 Float32
         waveform, sample_rate = torchaudio.load(wav_path)
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
@@ -122,22 +102,35 @@ class OptimizedCosyService:
         return waveform
 
     def stream_generate(self, text, prompt_text, prompt_wav):
+        # 1. 加载音频 (此时是 Float32 CPU tensor)
         prompt_speech_16k = self.safe_load_prompt(prompt_wav, 16000)
         
-        # 2. 推理
-        for i, output in enumerate(self.model.inference_zero_shot(
-            tts_text=text,
-            prompt_text=prompt_text,
-            prompt_speech_16k=prompt_speech_16k, 
-            stream=True
-        )):
-            audio_tensor = output['tts_speech'].cpu()
-            audio_numpy = audio_tensor.squeeze().numpy()
-            buffer = io.BytesIO()
-            sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
-            yield buffer.getvalue()
+        # 2. 【核心修复】转换为 Bfloat16 并移动到 CUDA
+        if torch.cuda.is_available():
+            prompt_speech_16k = prompt_speech_16k.to(self.device, dtype=torch.bfloat16)
+        
+        # 3. 推理
+        # 注意：不要在外部手动转 text/prompt_text，模型内部 Embedding 层会处理
+        try:
+            generator = self.model.inference_zero_shot(
+                tts_text=text,
+                prompt_text=prompt_text,
+                prompt_speech_16k=prompt_speech_16k, 
+                stream=True
+            )
+            
+            for i, output in enumerate(generator):
+                audio_tensor = output['tts_speech'].cpu() # 拿回 CPU
+                audio_numpy = audio_tensor.squeeze().float().numpy() # 确保转回 float32 numpy 供 soundfile 写入
+                
+                buffer = io.BytesIO()
+                sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
+                yield buffer.getvalue()
+                
+        except Exception as e:
+            print(f"❌ Inference Error: {e}")
+            import traceback
+            traceback.print_exc()
+            yield b"" # 防止客户端挂起
 
-# 使用示例：你可以传入 'int8' 或 'int4'
-# int8 推荐用于 V100，既省显存又利用 Tensor Core
-# service_instance = OptimizedCosyService(quantization_mode='int8')
 service_instance = OptimizedCosyService()
