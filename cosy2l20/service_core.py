@@ -33,13 +33,13 @@ class OptimizedCosyService:
             model_dir, 
             load_jit=False, 
             load_trt=False, 
-            fp16=False, # 必须 False，防止内部错误转换
+            fp16=False,
         )
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # 2. ✅ 手动转为 Bfloat16 (核心修复点)
+        # 2. ✅ 手动转为 Bfloat16
         if torch.cuda.is_available():
             print("[Init] Converting sub-modules to Bfloat16...")
-            self.device = torch.device('cuda')
             
             # 分别转换组件
             if hasattr(self.model.model, 'llm'):
@@ -58,7 +58,6 @@ class OptimizedCosyService:
             print(f"[Init] Applying {quantization_mode} quantization to LLM...")
             q_config = int4_weight_only() if quantization_mode == 'int4' else int8_weight_only()
             try:
-                # 仅量化 LLM，Flow 保持 BF16 以保证音质
                 quantize_(self.model.model.llm, q_config)
                 print(f"✅ LLM module quantized to {quantization_mode}.")
             except Exception as e:
@@ -74,25 +73,28 @@ class OptimizedCosyService:
             except Exception as e:
                 print(f"[Warn] Compile failed: {e}")
         
-        # 5. 预热 (Warmup) - 使用 Zero-shot 路径以测试 BF16 兼容性
+        # 5. 预热 (Warmup) - 修正版
         print("[Init] Warming up...")
         try:
-            # 构造一个假的 BF16 音频输入进行预热，确保存活
-            dummy_wav = torch.randn(16000, dtype=torch.bfloat16, device=self.device)
-            list(self.model.inference_zero_shot(
-                tts_text='预热', 
-                prompt_text='预热', 
-                prompt_speech_16k=dummy_wav, 
-                stream=True
-            ))
+            # 保持 Float32 输入
+            dummy_wav = torch.randn(16000, device=self.device)
+            # 使用 Autocast 桥接
+            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                list(self.model.inference_zero_shot(
+                    tts_text='预热', 
+                    prompt_text='预热', 
+                    prompt_speech_16k=dummy_wav, 
+                    stream=True
+                ))
             print("✅ Warmup done.")
         except Exception as e:
             print(f"[Warn] Warmup skipped or failed: {e}")
+            import traceback
+            traceback.print_exc()
             
         print("[Init] Service Ready.")
 
     def safe_load_prompt(self, wav_path, target_sr=16000):
-        # 这里的 load 默认返回 Float32
         waveform, sample_rate = torchaudio.load(wav_path)
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
@@ -102,35 +104,35 @@ class OptimizedCosyService:
         return waveform
 
     def stream_generate(self, text, prompt_text, prompt_wav):
-        # 1. 加载音频 (此时是 Float32 CPU tensor)
+        # 1. 加载音频 (CPU Float32)
         prompt_speech_16k = self.safe_load_prompt(prompt_wav, 16000)
         
-        # 2. 【核心修复】转换为 Bfloat16 并移动到 CUDA
+        # 2. 移动到 CUDA，但保持 Float32！
         if torch.cuda.is_available():
-            prompt_speech_16k = prompt_speech_16k.to(self.device, dtype=torch.bfloat16)
+            prompt_speech_16k = prompt_speech_16k.to(self.device)
         
-        # 3. 推理
-        # 注意：不要在外部手动转 text/prompt_text，模型内部 Embedding 层会处理
+        # 3. 推理 (Autocast 处理类型匹配)
         try:
-            generator = self.model.inference_zero_shot(
-                tts_text=text,
-                prompt_text=prompt_text,
-                prompt_speech_16k=prompt_speech_16k, 
-                stream=True
-            )
-            
-            for i, output in enumerate(generator):
-                audio_tensor = output['tts_speech'].cpu() # 拿回 CPU
-                audio_numpy = audio_tensor.squeeze().float().numpy() # 确保转回 float32 numpy 供 soundfile 写入
+            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                generator = self.model.inference_zero_shot(
+                    tts_text=text,
+                    prompt_text=prompt_text,
+                    prompt_speech_16k=prompt_speech_16k, 
+                    stream=True
+                )
                 
-                buffer = io.BytesIO()
-                sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
-                yield buffer.getvalue()
+                for i, output in enumerate(generator):
+                    audio_tensor = output['tts_speech'].cpu()
+                    audio_numpy = audio_tensor.squeeze().float().numpy()
+                    
+                    buffer = io.BytesIO()
+                    sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
+                    yield buffer.getvalue()
                 
         except Exception as e:
             print(f"❌ Inference Error: {e}")
             import traceback
             traceback.print_exc()
-            yield b"" # 防止客户端挂起
+            yield b""
 
 service_instance = OptimizedCosyService()
