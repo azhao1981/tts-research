@@ -52,3 +52,26 @@ git submodule update --init --recursive
 
 http://39.105.98.32:13099
 http://39.105.98.32:13099/stream
+
+ssh root@123.57.26.77
+http://123.57.26.77:13099
+http://123.57.26.77:13099/stream
+uv pip install ninja packaging
+# 1. 强制使用所有核心进行编译 最好不要用完
+export MAX_JOBS=15
+
+# 2. 告诉 Flash Attention 这是一个 Ada Lovelace (L20) 架构
+# 虽然通常会自动检测，但显式指定可以避免识别错误
+export TORCH_CUDA_ARCH_LIST="8.9"
+
+# 3. 开始安装 (指定 --no-build-isolation 以使用当前环境的 torch)
+uv pip install flash-attn --no-build-isolation
+
+
+import torch
+import flash_attn
+
+print(f"Flash Attention Version: {flash_attn.__version__}")
+print(f"Is CUDA available: {torch.cuda.is_available()}")
+# 验证是否能调用（如果没有报错，说明安装成功）
+print("✅ Flash Attention is installed and importable!")
