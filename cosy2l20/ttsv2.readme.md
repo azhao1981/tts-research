@@ -35,6 +35,17 @@ workv3:/task/tts/l20.2.md
 
 ## waring
 
+failed to import ttsfrd, use wetext instead
+https://github.com/ModelTC/LightTTS/blob/main/README.md
+
+```bash
+snapshot_download('iic/CosyVoice-ttsfrd', local_dir='pretrained_models/CosyVoice-ttsfrd')
+cd pretrained_models/CosyVoice-ttsfrd/
+unzip resource.zip -d .
+pip install ttsfrd_dependency-0.1-py3-none-any.whl
+pip install ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl
+
+```
 /root/tts/tts-research/.venv/lib/python3.10/site-packages/lightning/fabric/__init__.py:41: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
 /root/tts/tts-research/.venv/lib/python3.10/site-packages/diffusers/models/lora.py:393: FutureWarning: `LoRACompatibleLinear` is deprecated and will be removed in version 1.0.0. Use of `LoRACompatibleLinear` is deprecated. Please switch to PEFT backend by installing PEFT: `pip install peft`.
 

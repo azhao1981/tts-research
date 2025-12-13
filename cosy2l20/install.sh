@@ -76,3 +76,40 @@ print(f"Flash Attention Version: {flash_attn.__version__}")
 print(f"Is CUDA available: {torch.cuda.is_available()}")
 # 验证是否能调用（如果没有报错，说明安装成功）
 print("✅ Flash Attention is installed and importable!")
+
+
+## ttsfrd
+# 这从此不行，import ttsfrd 可以，真跑会报错
+# 1. 安装 ttsfrd (指定 ModelScope 的源)
+pip install ttsfrd -f https://modelscope.oss-cn-beijing.aliyuncs.com/releases/repo.html
+
+# 2. 如果上一步报错，可能需要安装依赖库 (主要是一些 C++ 库)
+# 通常 ttsfrd 依赖特定版本的 libc 或 python，如果安装失败，请看下面的 Plan B
+
+# 4. Plan B: 如果安装失败（常见情况）
+# 替代优化建议： 如果 ttsfrd 装不上，我们可以通过优化 wetext 的使用方式来弥补这 20ms 的损失：
+# pip install WeTextProcessing pynini
+
+python -c "import ttsfrd; print('✅ ttsfrd installed successfully')"
+
+pip uninstall ttsfrd 
+l  Successfully uninstalled ttsfrd-0.2.1
+# https://github.com/ModelTC/LightTTS/blob/main/README.md
+# python down_offical.py
+from modelscope import snapshot_download
+snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')
+snapshot_download('iic/CosyVoice-ttsfrd', local_dir='pretrained_models/CosyVoice-ttsfrd')
+
+apt install unzip -y
+unzip resource.zip -d .
+pip install ttsfrd_dependency-0.1-py3-none-any.whl
+pip install ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl
+
+# pretrained_models 目录应该在CosyVoice 官方代码库github的根目录下
+
+ln -nfs /root/tts/pretrained_models /root/tts/CosyVoice/
+
+
+# 2025-12-13 15:18:07.546157917 [W:onnxruntime:, transformer_memcpy.cc:74 ApplyImpl] 8 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider. It might have negative impact on performance (including unable to run CUDA graph). Set session_options.log_severity_level=1 to see the detail logs before this message.
+# 2025-12-13 15:18:07.548367603 [W:onnxruntime:, session_state.cc:1166 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+# 2025-12-13 15:18:07.548380828 [W:onnxruntime:, session_state.cc:1168 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.
