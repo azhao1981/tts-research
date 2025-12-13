@@ -27,3 +27,10 @@ screen -r tts
 screen -ls   
 screen -r 23986   # 进入 ID 为 1234 的会话
 ```
+
+flash-attention 要用编译好的
+
+```bash
+wget https://mirror.ghproxy.com/https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.3cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+
+```

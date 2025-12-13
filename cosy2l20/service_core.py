@@ -34,9 +34,27 @@ class OptimizedCosyService:
         )
         # 2. ✅ 手动转为 Bfloat16 (L20 专用神器)
         #    Bfloat16 不会溢出，完美解决 "probability tensor contains inf/nan"
+        #    CosyVoice2Model 只是一个容器，没有 .to() 方法
+        #    我们需要分别把它的核心组件转为 bf16
+        # ----------------------------------------------------------------------
         if torch.cuda.is_available():
-            print("[Init] Converting model to Bfloat16...")
-            self.model.model.to(torch.bfloat16)
+            print("[Init] Converting sub-modules to Bfloat16...")
+            
+            # 1. 转换 LLM (核心文本理解部分)
+            if hasattr(self.model.model, 'llm'):
+                self.model.model.llm.to(dtype=torch.bfloat16)
+                print(" -> LLM converted to bfloat16")
+            
+            # 2. 转换 Flow (核心语音生成部分)
+            if hasattr(self.model.model, 'flow'):
+                self.model.model.flow.to(dtype=torch.bfloat16)
+                print(" -> Flow converted to bfloat16")
+            
+            # 3. 转换 HiFT/VAE (声码器部分)
+            # 注意：如果声音听起来有底噪，可以尝试让 hift 保持 fp32
+            if hasattr(self.model.model, 'hift'):
+                self.model.model.hift.to(dtype=torch.bfloat16)
+                print(" -> HiFT converted to bfloat16")
         # ----------------------------------------------------------------------
         # 【核心修改】在此处插入量化逻辑 (必须在 compile 之前)
         # ----------------------------------------------------------------------
