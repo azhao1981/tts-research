@@ -10,6 +10,7 @@ import torchaudio.transforms as T
 import soundfile as sf
 import os
 import types
+import threading  # <--- 新增：线程锁库
 
 # 2. 显式开启 Flash Attention 优化
 torch.backends.cuda.enable_flash_sdp(True)
@@ -30,9 +31,12 @@ class OptimizedCosyService:
     def __init__(self, model_dir=FINETURED_COSYVOICE2_MODEL_PATH, quantization_mode='none'):
         print(f"[Init] Loading model from {model_dir} on L20...")
         
+        # 1. 初始化线程锁 (解决并发崩溃的核心)
+        self.lock = threading.Lock()
+        
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # 1. 加载模型 (FP32加载)
+        # 2. 加载模型 (FP32加载)
         self.model = CosyVoice2(
             model_dir, 
             load_jit=False, 
@@ -40,7 +44,7 @@ class OptimizedCosyService:
             fp16=False,
         )
         
-        # 2. ✅ 手动将核心模型转为 Bfloat16
+        # 3. ✅ 手动将核心模型转为 Bfloat16
         if torch.cuda.is_available():
             print("[Init] Converting sub-modules to Bfloat16...")
             if hasattr(self.model.model, 'llm'):
@@ -48,13 +52,14 @@ class OptimizedCosyService:
             if hasattr(self.model.model, 'flow'):
                 self.model.model.flow.to(dtype=torch.bfloat16)
             if hasattr(self.model.model, 'hift'):
-                self.model.model.hift.to(dtype=torch.bfloat16)
-            print("✅ All modules converted to Bfloat16.")
+                # 建议：HiFT 保持 FP32 以防止底噪，如无底噪可转 BF16
+                self.model.model.hift.to(dtype=torch.float32) 
+            print("✅ All modules converted to Bfloat16 (HiFT kept in FP32).")
 
-        # 3. ✅ 应用 Monkey Patch 3.0 (修复设备+精度冲突)
+        # 4. ✅ 应用 Monkey Patch 3.0
         self._apply_frontend_patch()
 
-        # 4. 量化逻辑 (torchao)
+        # 5. 量化逻辑 (torchao)
         if TORCHAO_AVAILABLE and quantization_mode in ['int8', 'int4']:
             print(f"[Init] Applying {quantization_mode} quantization to LLM...")
             q_config = int4_weight_only() if quantization_mode == 'int4' else int8_weight_only()
@@ -64,7 +69,7 @@ class OptimizedCosyService:
             except Exception as e:
                 print(f"[Error] Quantization failed: {e}")
 
-        # 5. 编译优化
+        # 6. 编译优化
         if torch.cuda.is_available():
             print("[Init] Compiling sub-modules...")
             try:
@@ -75,11 +80,10 @@ class OptimizedCosyService:
             except Exception as e:
                 print(f"[Warn] Compile failed: {e}")
         
-        # 6. 预热 (Warmup)
+        # 7. 预热 (Warmup)
         print("[Init] Warming up...")
         try:
-            # 构造 FP32 输入 (Patch 会把它挪回 CPU 处理)
-            # 注意形状必须是 (1, 16000)
+            # 构造 FP32 输入, 维度 (1, 16000)
             dummy_wav = torch.randn(1, 16000, device=self.device)
             
             # 使用 Autocast 桥接
@@ -99,24 +103,16 @@ class OptimizedCosyService:
         print("[Init] Service Ready.")
 
     def _apply_frontend_patch(self):
-        """
-        Monkey Patch 3.0:
-        1. 强制前端在 CPU 上以 FP32 运行。
-        2. 将结果搬回 GPU 时，智能地将浮点数转为 BFloat16，整数保持不变。
-        这是解决 "Float vs BFloat16" 和 "CPU vs GPU" 冲突的终极方案。
-        """
-        print("[Init] Applying Frontend Patch (Force CPU & Align Dtype)...")
-        
-        # 拿到原始方法
+        """Monkey Patch 3.0: Force CPU Frontend & Align Dtypes"""
+        print("[Init] Applying Frontend Patch...")
         original_frontend_func = self.model.frontend.frontend_zero_shot
 
-        # 定义补丁函数
         def patched_frontend_zero_shot(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id):
             # 1. 输入回退到 CPU (FP32)
             if isinstance(prompt_speech_16k, torch.Tensor) and prompt_speech_16k.is_cuda:
                 prompt_speech_16k = prompt_speech_16k.cpu()
 
-            # 2. 强制禁用 Autocast 运行前端
+            # 2. 强制禁用 Autocast
             if torch.cuda.is_available():
                 with torch.amp.autocast('cuda', enabled=False):
                     model_input = original_frontend_func(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id)
@@ -126,19 +122,12 @@ class OptimizedCosyService:
             # 3. 输出搬运到 GPU + 智能精度对齐
             for key, val in model_input.items():
                 if isinstance(val, torch.Tensor):
-                    # 先移到 GPU
                     val = val.to(self.device)
-                    
-                    # 关键修复：如果是浮点数(Embedding/Feat)，转为 BF16 以匹配模型权重
-                    # 如果是整数(Lengths/Codes)，保持原样
                     if val.is_floating_point():
                         val = val.to(dtype=torch.bfloat16)
-                    
                     model_input[key] = val
-            
             return model_input
 
-        # 替换方法
         self.model.frontend.frontend_zero_shot = patched_frontend_zero_shot
         print("✅ Frontend Patch applied.")
 
@@ -155,33 +144,34 @@ class OptimizedCosyService:
         # 1. 加载音频 (CPU Float32)
         prompt_speech_16k = self.safe_load_prompt(prompt_wav, 16000)
         
-        # 2. 移动到 CUDA
         if torch.cuda.is_available():
             prompt_speech_16k = prompt_speech_16k.to(self.device)
         
-        # 3. 推理 (Autocast 开启)
-        try:
-            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                generator = self.model.inference_zero_shot(
-                    tts_text=text,
-                    prompt_text=prompt_text,
-                    prompt_speech_16k=prompt_speech_16k, 
-                    stream=True
-                )
-                
-                for i, output in enumerate(generator):
-                    audio_tensor = output['tts_speech'].cpu()
-                    # 转回 float32 供 soundfile 使用
-                    audio_numpy = audio_tensor.squeeze().float().numpy()
+        # 2. 核心修改：加锁！
+        # 确保同一时刻只有一个请求在使用 self.model 进行推理
+        # 虽然这会变成串行，但能100%防止崩坏
+        with self.lock:
+            try:
+                with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    generator = self.model.inference_zero_shot(
+                        tts_text=text,
+                        prompt_text=prompt_text,
+                        prompt_speech_16k=prompt_speech_16k, 
+                        stream=True
+                    )
                     
-                    buffer = io.BytesIO()
-                    sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
-                    yield buffer.getvalue()
-                
-        except Exception as e:
-            print(f"❌ Inference Error: {e}")
-            import traceback
-            traceback.print_exc()
-            yield b""
+                    for i, output in enumerate(generator):
+                        audio_tensor = output['tts_speech'].cpu()
+                        audio_numpy = audio_tensor.squeeze().float().numpy()
+                        
+                        buffer = io.BytesIO()
+                        sf.write(buffer, audio_numpy, 24000, format='RAW', subtype='PCM_16')            
+                        yield buffer.getvalue()
+                    
+            except Exception as e:
+                print(f"❌ Inference Error: {e}")
+                import traceback
+                traceback.print_exc()
+                yield b""
 
 service_instance = OptimizedCosyService()
