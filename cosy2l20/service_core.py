@@ -30,14 +30,15 @@ class OptimizedCosyService:
     def __init__(self, model_dir=FINETURED_COSYVOICE2_MODEL_PATH, quantization_mode='none'):
         print(f"[Init] Loading model from {model_dir} on L20...")
         
-        # 1. 加载模型 (FP32加载，避免FP16溢出)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # 1. 加载模型 (FP32加载)
         self.model = CosyVoice2(
             model_dir, 
             load_jit=False, 
             load_trt=False, 
             fp16=False,
         )
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # 2. ✅ 手动将核心模型转为 Bfloat16
         if torch.cuda.is_available():
@@ -50,7 +51,7 @@ class OptimizedCosyService:
                 self.model.model.hift.to(dtype=torch.bfloat16)
             print("✅ All modules converted to Bfloat16.")
 
-        # 3. ✅ 应用 Monkey Patch (修复前端崩溃的关键)
+        # 3. ✅ 应用 Monkey Patch 2.0 (强制前端走 CPU)
         self._apply_frontend_patch()
 
         # 4. 量化逻辑 (torchao)
@@ -67,8 +68,9 @@ class OptimizedCosyService:
         if torch.cuda.is_available():
             print("[Init] Compiling sub-modules...")
             try:
-                self.model.model.llm = torch.compile(self.model.model.llm, mode="reduce-overhead", fullgraph=False)
-                self.model.model.flow = torch.compile(self.model.model.flow, mode="reduce-overhead", fullgraph=False)
+                # 启用 dynamic=True 防止变长输入导致重编译
+                self.model.model.llm = torch.compile(self.model.model.llm, mode="reduce-overhead", fullgraph=False, dynamic=True)
+                self.model.model.flow = torch.compile(self.model.model.flow, mode="reduce-overhead", fullgraph=False, dynamic=True)
                 print("✅ Torch Compile applied.")
             except Exception as e:
                 print(f"[Warn] Compile failed: {e}")
@@ -76,9 +78,9 @@ class OptimizedCosyService:
         # 6. 预热 (Warmup)
         print("[Init] Warming up...")
         try:
-            # 构造 FP32 输入 (Patch 会保证它在前端不被乱转)
+            # 构造 FP32 输入 (Patch 会把它挪回 CPU 处理)
             dummy_wav = torch.randn(16000, device=self.device)
-            # 使用 Autocast 桥接 (Patch 负责局部禁用)
+            # 使用 Autocast 桥接
             with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                 list(self.model.inference_zero_shot(
                     tts_text='预热', 
@@ -96,26 +98,36 @@ class OptimizedCosyService:
 
     def _apply_frontend_patch(self):
         """
-        核心修复：给 Frontend 打补丁。
-        CosyVoice 的前端 Resampler 会动态生成 FP32 kernel。
-        如果外层开启 Autocast，输入会被强转 BF16，导致 conv1d 类型不匹配崩溃。
-        此 Patch 强制前端在 Autocast 关闭 (FP32) 模式下运行。
+        Monkey Patch 2.0:
+        前端（音频处理）强制在 CPU 上以 FP32 运行，彻底解决设备和类型冲突。
+        处理完后，自动把结果搬回 GPU 给模型用。
         """
-        print("[Init] Applying Frontend Patch (Disable Autocast for Resampler)...")
+        print("[Init] Applying Frontend Patch (Force CPU & Disable Autocast)...")
         
-        # 1. 拿到原始绑定的方法
+        # 拿到原始方法
         original_frontend_func = self.model.frontend.frontend_zero_shot
 
-        # 2. 定义 Wrapper
-        def patched_frontend_zero_shot(*args, **kwargs):
-            # 强制退出 autocast，确保 Resampler 接收 FP32 且运行在 FP32
+        # 定义补丁函数
+        def patched_frontend_zero_shot(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id):
+            # 1. 输入回退到 CPU
+            if isinstance(prompt_speech_16k, torch.Tensor) and prompt_speech_16k.is_cuda:
+                prompt_speech_16k = prompt_speech_16k.cpu()
+
+            # 2. 强制禁用 Autocast (FP32模式)
             if torch.cuda.is_available():
                 with torch.amp.autocast('cuda', enabled=False):
-                    return original_frontend_func(*args, **kwargs)
+                    model_input = original_frontend_func(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id)
             else:
-                return original_frontend_func(*args, **kwargs)
+                model_input = original_frontend_func(i, prompt_text, prompt_speech_16k, sample_rate, zero_shot_spk_id)
 
-        # 3. 替换实例方法
+            # 3. 输出搬运到 GPU (准备喂给 LLM/Flow)
+            for key, val in model_input.items():
+                if isinstance(val, torch.Tensor):
+                    model_input[key] = val.to(self.device)
+            
+            return model_input
+
+        # 替换方法
         self.model.frontend.frontend_zero_shot = patched_frontend_zero_shot
         print("✅ Frontend Patch applied.")
 
@@ -132,12 +144,13 @@ class OptimizedCosyService:
         # 1. 加载音频 (CPU Float32)
         prompt_speech_16k = self.safe_load_prompt(prompt_wav, 16000)
         
-        # 2. 移动到 CUDA，保持 Float32！
+        # 2. 移动到 CUDA (保持 FP32)
+        # Monkey Patch 会负责把它暂时挪回 CPU，这里放 GPU 也没事，
+        # 或者为了省去传输开销，这里也可以直接注释掉 .to(device)，让它一开始就在 CPU
         if torch.cuda.is_available():
             prompt_speech_16k = prompt_speech_16k.to(self.device)
         
-        # 3. 推理 (Autocast 开启)
-        #    流程：Autocast ON -> Patch(Autocast OFF) -> Frontend(FP32) -> Patch End -> Autocast ON -> LLM(BF16)
+        # 3. 推理 (Autocast 开启，LLM 需要 BF16)
         try:
             with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
                 generator = self.model.inference_zero_shot(
